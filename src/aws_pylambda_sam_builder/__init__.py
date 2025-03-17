@@ -229,14 +229,16 @@ def main():
         if item == "requirements.txt":
             continue
         src_item = os.path.join(config.source, item)
+        # Convert to absolute path to ensure symlinks are absolute
+        src_item_abs = os.path.abspath(src_item)
         dest_item = os.path.join(config.destination, item)
         if os.path.lexists(dest_item):
             os.remove(dest_item)
         try:
-            os.symlink(src_item, dest_item)
-            logger.debug("Symlinked project file %s -> %s", src_item, dest_item)
+            os.symlink(src_item_abs, dest_item)
+            logger.debug("Symlinked project file %s -> %s", src_item_abs, dest_item)
         except Exception as e:
-            logger.error("Failed to symlink project file %s to %s", src_item, dest_item, exc_info=e)
+            logger.error("Failed to symlink project file %s to %s", src_item_abs, dest_item, exc_info=e)
             sys.exit(1)
 
     logger.info("Build completed successfully.")
