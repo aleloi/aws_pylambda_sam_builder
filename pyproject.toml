@@ -1,0 +1,32 @@
+[tool.poetry]
+name = "aws_pylambda_sam_builder"
+version = "0.1.0"
+description = "A tool for building AWS Lambda functions from Python projects."
+authors = ["Alex Loiko <alexandreloiko@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+packages = [{ include = "aws_pylambda_sam_builder", from = "src" }]
+homepage = "https://github.com/aleloi/aws_pylambda_sam_builder"
+
+[tool.poetry.scripts]
+aws-pylambda-sam-builder = "aws_pylambda_sam_builder:main"
+
+[tool.poetry.dependencies]
+python = ">=3.9"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.0"
+mypy = "1.14.1"
+pytest-cov = "^6.0.0"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.mypy]
+ignore_missing_imports = true
+
+# Add pytest configuration
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
