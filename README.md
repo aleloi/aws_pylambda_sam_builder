@@ -26,9 +26,15 @@ Resources:
       BuildMethod: makefile
 ```
 
-Now `sam build --build-in-source --cached  -t template.yaml YourLambda` uses per-package caching, doesn't need a container, and builds in 100ms after the first build.
+Now `sam build --build-in-source --parallel -t template.yaml YourLambda` uses per-package caching, doesn't need a container, and builds in 100ms after the first build.
 
 ### Issues
 * probably not safe for concurrent builds
 * can't build from source (only does binary wheels)
 * requires all transitive deps to be listed in requirements.txt. I did `poetry export -f initial_requirements.txt -o requirements.txt --without-hashes` 
+
+
+### New in 0.2
+* Support for AWS Lambda python 3.13 environment
+* File lock for concurrent builds
+* Bugfix: previously, if a download failed, e.g. because no compiled package existed, a folder with the metadata hash would still be created. Then the next run would "succeed", but the dependency would not end up in the lambda zip. Current version makes sure to crash and delete the folder if downloading fails.

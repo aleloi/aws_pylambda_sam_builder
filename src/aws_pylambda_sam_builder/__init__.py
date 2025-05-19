@@ -29,10 +29,11 @@ import argparse
 import hashlib
 import json
 import logging
-import os
 import subprocess
 import sys
-
+import shutil
+from filelock import FileLock
+from pathlib import Path
 from typing import NamedTuple
 
 __all__ = ["main"]
@@ -43,8 +44,8 @@ class BuildConfig(NamedTuple):
     abi: str
     implementation: str
     python_version: str
-    source: str
-    destination: str
+    source: Path
+    destination: Path
 
 def setup_logger():
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -57,30 +58,17 @@ def compute_hash(requirement: str, config: BuildConfig) -> str:
     key = f"{requirement.strip()}|{'.'.join(config.platform)}|{config.abi}|{config.implementation}|{config.python_version}"
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
-def process_requirement(requirement: str, config: BuildConfig, cache_dir: str, logger: logging.Logger) -> str:
+def _download_and_unpack_wheel(requirement: str, config: BuildConfig, hash_dir: Path, logger: logging.Logger) -> None:
     """
-    Process a single requirement:
-      * Compute its hash.
-      * If not cached, download the wheel via pip and unpack it using unzip.
-      * Save metadata to the cache.
+    Download the wheel using pip and unpack it.
+    """
+    metadata_dir = hash_dir / "metadata"
+    unpacked_dir = hash_dir / "unpacked_wheel"
     
-    Returns the cache folder path for this requirement.
-    """
-    req_hash = compute_hash(requirement, config)
-    hash_dir = os.path.join(cache_dir, req_hash)
-    metadata_dir = os.path.join(hash_dir, "metadata")
-    unpacked_dir = os.path.join(hash_dir, "unpacked_wheel")
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    unpacked_dir.mkdir(parents=True, exist_ok=True)
 
-    if os.path.exists(hash_dir):
-        logger.info("Using cached wheel for requirement: %s", requirement.strip())
-        return hash_dir
-
-    logger.info("Caching wheel for requirement: %s", requirement.strip())
-    os.makedirs(metadata_dir, exist_ok=True)
-    os.makedirs(unpacked_dir, exist_ok=True)
-
-    # Build the pip download command.
-    # Note: if --platform is a comma-separated list, pass as-is.
+    # Build the pip download command
     platform_args = []
     for platform in config.platform:
         platform_args.append("--platform")
@@ -94,7 +82,7 @@ def process_requirement(requirement: str, config: BuildConfig, cache_dir: str, l
         "--python-version", config.python_version,
         requirement.strip(),
         "--no-deps",
-        "-d", hash_dir,
+        "-d", str(hash_dir),
     ]
     try:
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -102,55 +90,88 @@ def process_requirement(requirement: str, config: BuildConfig, cache_dir: str, l
         logger.error("pip download failed for requirement %s", requirement.strip(), exc_info=e)
         sys.exit(1)
 
-    # Look for the downloaded wheel file.
-    wheel_files = [f for f in os.listdir(hash_dir) if f.endswith(".whl")]
+    # Look for the downloaded wheel file
+    wheel_files = list(hash_dir.glob("*.whl"))
     if not wheel_files:
         logger.error("No wheel file found for requirement %s", requirement.strip())
         sys.exit(1)
-    (wheel_file,) = wheel_files
-    wheel_file = os.path.join(hash_dir, wheel_file)
+    
+    wheel_file = wheel_files[0]
     logger.info("Unpacking wheel: %s", wheel_file)
-    subprocess.run(["unzip", "-o", wheel_file, "-d", unpacked_dir],
-                   check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    
+    subprocess.run(["unzip", "-o", str(wheel_file), "-d", str(unpacked_dir)],
+                  check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    # Save metadata: include the original requirement and architecture fields.
+    # Save metadata
     metadata = {
         "requirement": requirement.strip(),
         "platform": config.platform,
         "abi": config.abi,
         "implementation": config.implementation,
         "python_version": config.python_version,
-        "wheel_file": wheel_file
+        "wheel_file": str(wheel_file)
     }
-    metadata_file = os.path.join(metadata_dir, "metadata.json")
-    with open(metadata_file, "w") as f:
-        json.dump(metadata, f)
-    logger.info("Cached wheel for %s at %s", requirement.strip(), hash_dir)
+    metadata_file = metadata_dir / "metadata.json"
+    metadata_file.write_text(json.dumps(metadata))
 
+def process_requirement(requirement: str, config: BuildConfig, cache_dir: Path, logger: logging.Logger) -> Path:
+    """
+    Process a single requirement:
+      * Compute its hash.
+      * If not cached, download the wheel via pip and unpack it using unzip.
+      * Save metadata to the cache.
+    
+    Returns the cache folder path for this requirement.
+    """
+    req_hash = compute_hash(requirement, config)
+    hash_dir = cache_dir / req_hash
+    lock_file = cache_dir / f"{req_hash}.lock"
+    
+    # Quick check if hash_dir already exists (fast path)
+    if hash_dir.exists():
+        logger.info("Using cached wheel for requirement: %s", requirement.strip())
+        return hash_dir
+    
+    # Slow path with lock
+    logger.info("Attempting to cache wheel for requirement: %s", requirement.strip())
+    
+    with FileLock(str(lock_file)):
+        # Check again after acquiring the lock (another process might have created it)
+        if hash_dir.exists():
+            logger.info("Another process created the cache for: %s", requirement.strip())
+            return hash_dir
+        
+        logger.info("Caching wheel for requirement: %s", requirement.strip())
+        try:
+            _download_and_unpack_wheel(requirement, config, hash_dir, logger)
+            logger.info("Cached wheel for %s at %s", requirement.strip(), hash_dir)
+        except Exception as e:
+            logger.error("Error caching wheel for %s: %s", requirement.strip(), str(e))
+            shutil.rmtree(hash_dir)
+            raise e
+    
     return hash_dir
 
-def symlink_directory_contents(src_dir: str, dest_dir: str, logger: logging.Logger) -> None:
+def symlink_directory_contents(src_dir: Path, dest_dir: Path, logger: logging.Logger) -> None:
     """
     Create symlinks in the destination directory for every file/directory in src_dir.
     """
-    if not os.path.exists(dest_dir):
-        os.makedirs(dest_dir, exist_ok=True)
-    for item in os.listdir(src_dir):
-        src_item = os.path.join(src_dir, item)
-        dest_item = os.path.join(dest_dir, item)
-        if os.path.lexists(dest_item):
-            os.remove(dest_item)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    for item in src_dir.iterdir():
+        dest_item = dest_dir / item.name
+        if dest_item.exists():
+            dest_item.unlink()
         try:
-            os.symlink(src_item, dest_item)
-            logger.debug("Symlinked %s -> %s", src_item, dest_item)
+            dest_item.symlink_to(item)
+            logger.debug("Symlinked %s -> %s", item, dest_item)
         except Exception as e:
-            logger.error("Failed to symlink %s to %s", src_item, dest_item, exc_info=e)
+            logger.error("Failed to symlink %s to %s", item, dest_item, exc_info=e)
             sys.exit(1)
 
 def main():
     parser = argparse.ArgumentParser(description="AWS PyLambda SAM Builder")
-    parser.add_argument("--aws-runtime", required=True, choices=["py310", "py311", "py312"], 
-                        help="Target AWS Lambda Python runtime (py310, py311, py312)")
+    parser.add_argument("--aws-runtime", required=True, choices=["py310", "py311", "py312", "py313"], 
+                        help="Target AWS Lambda Python runtime (py310, py311, py312, py313)")
     parser.add_argument("--aws-architecture", required=True, choices=["x86_64", "arm64"],
                         help="Target AWS Lambda architecture (x86_64, arm64)")
     parser.add_argument("--source", required=True, help="Source project directory")
@@ -169,6 +190,7 @@ def main():
         "py310": {"python_version": "3.10", "abi": "cp310"},
         "py311": {"python_version": "3.11", "abi": "cp311"},
         "py312": {"python_version": "3.12", "abi": "cp312"},
+        "py313": {"python_version": "3.13", "abi": "cp313"},
     }
     
     # Map architecture to platform
@@ -184,25 +206,24 @@ def main():
         abi=runtime_info["abi"],
         implementation="cp",  # Always "cp" for CPython
         python_version=runtime_info["python_version"],
-        source=args.source,
-        destination=args.destination,
+        source=Path(args.source),
+        destination=Path(args.destination),
     )
 
     # Set up the global cache directory.
-    cache_dir = os.path.expanduser("~/.cache/aws_pylambda_sam_builder")
-    os.makedirs(cache_dir, exist_ok=True)
+    cache_dir = Path.home() / ".cache" / "aws_pylambda_sam_builder"
+    cache_dir.mkdir(parents=True, exist_ok=True)
 
     # Read the requirements.txt from the source directory.
-    req_file = os.path.join(config.source, "requirements.txt")
-    if not os.path.exists(req_file):
+    req_file = config.source / "requirements.txt"
+    if not req_file.exists():
         logger.error("requirements.txt not found in source directory: %s", config.source)
         sys.exit(1)
 
     try:
-        with open(req_file, "r") as f:
-            # Skip empty lines and comments.
-            requirements = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
-            requirements = [line.split(";")[0] for line in requirements]
+        requirements = [line.strip() for line in req_file.read_text().splitlines() 
+                      if line.strip() and not line.strip().startswith("#")]
+        requirements = [line.split(";")[0] for line in requirements]
     except Exception as e:
         logger.error("Error reading requirements.txt", exc_info=e)
         sys.exit(1)
@@ -216,8 +237,8 @@ def main():
     # Symlink each requirement's unpacked wheel into the destination directory.
     logger.info("Symlinking requirement wheels to destination: %s", config.destination)
     for cache_folder in cached_dirs:
-        unpacked = os.path.join(cache_folder, "unpacked_wheel")
-        if os.path.exists(unpacked):
+        unpacked = cache_folder / "unpacked_wheel"
+        if unpacked.exists():
             symlink_directory_contents(unpacked, config.destination, logger)
         else:
             logger.error("Unpacked wheel folder missing in cache: %s", cache_folder)
@@ -225,20 +246,17 @@ def main():
 
     # Symlink the project files (excluding requirements.txt) to the destination.
     logger.info("Symlinking project files to destination: %s", config.destination)
-    for item in os.listdir(config.source):
-        if item == "requirements.txt":
+    for item in config.source.iterdir():
+        if item.name == "requirements.txt":
             continue
-        src_item = os.path.join(config.source, item)
-        # Convert to absolute path to ensure symlinks are absolute
-        src_item_abs = os.path.abspath(src_item)
-        dest_item = os.path.join(config.destination, item)
-        if os.path.lexists(dest_item):
-            os.remove(dest_item)
+        dest_item = config.destination / item.name
+        if dest_item.exists():
+            dest_item.unlink()
         try:
-            os.symlink(src_item_abs, dest_item)
-            logger.debug("Symlinked project file %s -> %s", src_item_abs, dest_item)
+            dest_item.symlink_to(item)
+            logger.debug("Symlinked project file %s -> %s", item, dest_item)
         except Exception as e:
-            logger.error("Failed to symlink project file %s to %s", src_item_abs, dest_item, exc_info=e)
+            logger.error("Failed to symlink project file %s to %s", item, dest_item, exc_info=e)
             sys.exit(1)
 
     logger.info("Build completed successfully.")
