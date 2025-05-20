@@ -253,7 +253,7 @@ def main():
         if dest_item.exists():
             dest_item.unlink()
         try:
-            dest_item.symlink_to(item)
+            dest_item.symlink_to(item.absolute())
             logger.debug("Symlinked project file %s -> %s", item, dest_item)
         except Exception as e:
             logger.error("Failed to symlink project file %s to %s", item, dest_item, exc_info=e)
