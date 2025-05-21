@@ -51,8 +51,13 @@ def test_compute_hash(build_config):
 # Test process_requirement function with existing cache
 @patch("pathlib.Path.exists")
 @patch("pathlib.Path.mkdir")
-def test_process_requirement_cached(mock_mkdir, mock_exists, build_config):
+@patch("aws_pylambda_sam_builder.FileLock")
+def test_process_requirement_cached(mock_filelock, mock_mkdir, mock_exists, build_config):
     mock_exists.return_value = True
+    
+    # Set up FileLock mock to be used as a context manager
+    mock_lock_instance = MagicMock()
+    mock_filelock.return_value = mock_lock_instance
     
     requirement = "requests==2.28.1"
     cache_dir = Path("/fake/cache")
@@ -66,7 +71,7 @@ def test_process_requirement_cached(mock_mkdir, mock_exists, build_config):
     assert result == expected_dir
     
     # Verify log message
-    logger.info.assert_called_with("Using cached wheel for requirement: %s", requirement.strip())
+    logger.info.assert_called_with("Another process created the cache for: %s", requirement.strip())
     
     # Verify no directories were created
     mock_mkdir.assert_not_called()

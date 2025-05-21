@@ -126,15 +126,7 @@ def process_requirement(requirement: str, config: BuildConfig, cache_dir: Path, 
     req_hash = compute_hash(requirement, config)
     hash_dir = cache_dir / req_hash
     lock_file = cache_dir / f"{req_hash}.lock"
-    
-    # Quick check if hash_dir already exists (fast path)
-    if hash_dir.exists():
-        logger.info("Using cached wheel for requirement: %s", requirement.strip())
-        return hash_dir
-    
-    # Slow path with lock
-    logger.info("Attempting to cache wheel for requirement: %s", requirement.strip())
-    
+
     with FileLock(str(lock_file)):
         # Check again after acquiring the lock (another process might have created it)
         if hash_dir.exists():
