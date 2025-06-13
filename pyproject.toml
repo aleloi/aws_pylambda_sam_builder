@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "aws_pylambda_sam_builder"
-version = "0.2.2"
+version = "0.2.4"
 description = "A tool for building AWS Lambda functions from Python projects."
 authors = ["Alex Loiko <alexandreloiko@gmail.com>"]
 license = "MIT"
@@ -12,7 +12,7 @@ homepage = "https://github.com/aleloi/aws_pylambda_sam_builder"
 aws-pylambda-sam-builder = "aws_pylambda_sam_builder:main"
 
 [tool.poetry.dependencies]
-python = ">=3.9"
+python = ">=3.11"
 filelock = "^3.18.0"
 
 [tool.poetry.group.dev.dependencies]

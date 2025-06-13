@@ -199,7 +199,8 @@ def test_main(mock_read_text, mock_symlink_to, mock_unlink, mock_iterdir,
         aws_runtime="py311",
         aws_architecture="x86_64",
         source="/fake/source",
-        destination="/fake/destination"
+        destination="/fake/destination",
+        package_as=None,
     )
     
     mock_exists.return_value = True
@@ -219,6 +220,53 @@ def test_main(mock_read_text, mock_symlink_to, mock_unlink, mock_iterdir,
         
         # Verify process_requirement was called twice (for the two requirements)
         assert mock_process.call_count == 2
+
+# Test builder exits when --package-as is provided but __init__.py is missing
+@patch("argparse.ArgumentParser")
+@patch("pathlib.Path.exists")
+@patch("pathlib.Path.mkdir")
+@patch("pathlib.Path.iterdir")
+@patch("pathlib.Path.unlink")
+@patch("pathlib.Path.symlink_to")
+@patch("pathlib.Path.read_text")
+def test_package_as_without_init(mock_read_text, mock_symlink_to, mock_unlink, mock_iterdir, mock_mkdir, mock_exists, mock_parser):
+    """Ensure the builder crashes when --package-as is used but __init__.py does not exist in source."""
+    # Configure parse_args to include a package_as value
+    parser_instance = mock_parser.return_value
+    parser_instance.parse_args.return_value = MagicMock(
+        aws_runtime="py311",
+        aws_architecture="x86_64",
+        source="/fake/source",
+        destination="/fake/destination",
+        package_as="my_pkg",
+    )
+
+    # First Path.exists() call is for requirements.txt -> True
+    # Second call is for __init__.py -> False
+    call_counter = {"i": 0}
+
+    def exists_side_effect(*args, **kwargs):
+        call_counter["i"] += 1
+        if call_counter["i"] == 1:
+            return True  # requirements.txt exists
+        if call_counter["i"] == 2:
+            return False  # __init__.py missing
+        return True
+
+    mock_exists.side_effect = exists_side_effect
+
+    # Provide dummy requirements
+    mock_read_text.return_value = "requests==2.28.1\n"
+
+    # Simplify: Path.iterdir is not critical for this failure path.
+    mock_iterdir.return_value = []
+
+    # Patch process_requirement to bypass actual logic
+    with patch("aws_pylambda_sam_builder.process_requirement") as mock_process:
+        mock_process.return_value = Path("/fake/cache/hash1")
+
+        with pytest.raises(SystemExit):
+            main()
 
 if __name__ == "__main__":
     pytest.main(["-xvs", __file__]) 

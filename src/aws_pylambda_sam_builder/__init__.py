@@ -34,7 +34,21 @@ import sys
 import shutil
 from filelock import FileLock
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, Optional
+
+try:
+    from importlib.metadata import version
+    __version__ = version("aws_pylambda_sam_builder")
+except Exception:
+    # Fallback for development - read from pyproject.toml
+    try:
+        import tomllib
+        pyproject_path = Path(__file__).parent.parent.parent / "pyproject.toml"
+        with open(pyproject_path, "r", encoding="utf-8") as f:
+            pyproject_data = tomllib.loads(f.read())
+        __version__ = pyproject_data["tool"]["poetry"]["version"]
+    except Exception:
+        __version__ = "unknown"
 
 __all__ = ["main"]
 
@@ -168,6 +182,14 @@ def main():
                         help="Target AWS Lambda architecture (x86_64, arm64)")
     parser.add_argument("--source", required=True, help="Source project directory")
     parser.add_argument("--destination", required=True, help="Destination AWS build directory")
+    # Optional flag to package the lambda source code into its own sub-folder inside the destination
+    # The folder will be named after <package_name>. Only the *project* files are placed into that
+    # sub-folder; dependency wheels remain linked at the destination root.
+    parser.add_argument(
+        "--package-as",
+        required=False,
+        help="If provided, move (symlink) all source files under a <package_name>/ sub-directory in the destination. There must exist a <package_name>/__init__.py file. Dependencies remain at the destination root.",
+    )
     args = parser.parse_args()
 
     logger = setup_logger()
@@ -236,12 +258,39 @@ def main():
             logger.error("Unpacked wheel folder missing in cache: %s", cache_folder)
             sys.exit(1)
 
-    # Symlink the project files (excluding requirements.txt) to the destination.
-    logger.info("Symlinking project files to destination: %s", config.destination)
+    # Decide where project files will live. If the user provided --package-as we create that sub-dir
+    # (with an __init__.py marker) and place *only* the source files there. Dependency wheels that we
+    # already symlinked above stay untouched at the destination root.
+    project_dest_base: Path = config.destination
+    package_name: Optional[str] = args.package_as
+    
+    if package_name:
+        project_dest_base = config.destination / package_name
+        # Ensure the source directory already looks like a proper Python package.
+        init_src = config.source / "__init__.py"
+        if not init_src.exists():
+            logger.error(
+                "--package-as was provided (package name: %s) but no __init__.py found at source root %s",
+                package_name,
+                config.source,
+            )
+            sys.exit(1)
+
+        # Create the package directory (but *do not* generate __init__.py – it must come from the source)
+        try:
+            project_dest_base.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            logger.error("Failed to create package directory %s: %s", project_dest_base, e)
+            sys.exit(1)
+
+        logger.info("Symlinking project files to package directory: %s", project_dest_base)
+    else:
+        logger.info("Symlinking project files to destination: %s", project_dest_base)
+
     for item in config.source.iterdir():
         if item.name == "requirements.txt":
             continue
-        dest_item = config.destination / item.name
+        dest_item = project_dest_base / item.name
         if dest_item.exists():
             dest_item.unlink()
         try:
